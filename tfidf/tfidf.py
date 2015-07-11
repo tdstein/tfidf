@@ -2,13 +2,18 @@ __author__ = 'tdstein'
 
 import math
 import re
-import collections
+import operator
+from collections import OrderedDict
 from stemming.porter2 import stem
 
 
 class TFIDF(object):
 
     documents = []
+
+    # A static set of IDF score by token.
+    __idf_by_term = {}
+    __tf_by_term_by_document = {}
 
     def __init__(self, documents):
         self.documents += documents
@@ -19,79 +24,113 @@ class TFIDF(object):
         """
         self.documents.append(document)
 
+        # Clear out the idf score for each term in this new document. We must recompute it.
+        for term in document.text:
+            if term in self.__idf_by_term:
+                self.__idf_by_term.pop(term, None)
+
     def add_documents(self, documents):
         """
-        Add a set of documents to the training set
+        Add a set of documents to the training set.
         """
-        self.documents += documents
+        for document in documents:
+            self.add_document(document)
 
     def evaluate(self):
 
-        # Determine the inverse document frequency of all terms in the vocabulary
-        idf = self.__idf__()
-
-        # Determine the tfidf score for each term in each document
-        tfidf_document_map = {}
+        # Calculate the Term Frequency - Inverse Document Frequency of each term in the corpus
+        tfidf_by_term_by_document = {}
         for document in self.documents:
-            tfidf_map = {}
-            tf = self.__tf__(document)
+            tfidf_by_term = {}
             for term in document.text.split():
-                tfidf_map[term] = tf[term] * idf[term]
-            tfidf_document_map[document] = collections.OrderedDict(sorted(tfidf_map.items()))
+                tf = self.__tf__(term, document)
+                idf = self.__idf__(term)
+                tfidf_by_term[term] = tf * idf
+            tfidf_by_term_by_document[document] = OrderedDict(sorted(tfidf_by_term.items()))
 
-        most_similar_map = {}
-        for k_target, v_target in tfidf_document_map.iteritems():
-            distance_map = {}
-            for k_neigh, v_neigh in tfidf_document_map.iteritems():
-                if k_target.id is not k_neigh.id:
-                    keys = set(v_target.keys()).intersection(set(v_neigh.keys()))
+        # Find the nearest neighbors by document
+        neighbors_by_document = {}
+        for target in self.documents:
+            target_tfidf_by_term = tfidf_by_term_by_document[document]
+            neighbors = {}
+            for neighbor in self.documents:
+                if neighbor != target:
+                    neighbor_tfidf_by_term = tfidf_by_term_by_document[neighbor]
 
-                    target_vector = [v for k, v in v_target.iteritems() if k in keys]
-                    neigh_vector = [v for k, v in v_neigh.iteritems() if k in keys]
+                    # Find the common terms in both the target and the neighbor
+                    common_terms = set(target.text.split()).intersection(set(neighbor.text.split()))
 
-                    if target_vector and neigh_vector:
-                        distance = self.__cosine_distance__(target_vector, neigh_vector)
-                        if distance > 0:
-                            distance_map[k_neigh] = distance
+                    tvector = [tfidf for term, tfidf in tfidf_by_term_by_document[target].iteritems() if term in common_terms]
+                    nvector = [tfidf for term, tfidf in tfidf_by_term_by_document[neighbor].iteritems() if term in common_terms]
 
-            distance_map = collections.OrderedDict(sorted(distance_map.items()))
-            most_similar_map[k_target] = list(reversed([d for d in collections.OrderedDict(sorted(distance_map.items())).keys()]))
+                    # Assert neither vector is empty
+                    if tvector and nvector:
+                        similarity = self.__cosine_distance__(tvector, nvector)
+                        if similarity > 0:
+                          neighbors[neighbor] = similarity
 
-        return most_similar_map
+            # Sort the neighbors by similarity in reverse order
+            neighbors = sorted(neighbors.items(), key=operator.itemgetter(1), reverse=True)
+            neighbors_by_document[target] = [document for (document, similarity) in neighbors]
 
-    def __idf__(self):
+        return neighbors_by_document
+
+    def __idf__(self, term):
         """
         Inverse Document Frequency
 
         The inverse document frequency is a measure of how much information a term provides in relationship to a set of
         documents. The value is logarithmically scaled to give exponentially less weight to a term that is exponentially
         more informative.
-        :return:
+        :param term: the term to calculate the inverse document frequency of.
+        :return: the inverse document frequency of the term
         """
-        term_counts = {}
+
+        # First check to see if we have already computed the IDF for this term
+        if term in self.__idf_by_term:
+            return self.__idf_by_term[term]
+
+        # Count the frequency of each term
+        freq_by_term = {}
         for document in self.documents:
             for term in set(document.text.split()):
-                if term not in term_counts:
-                    term_counts[term] = 1
+                if term not in freq_by_term:
+                    freq_by_term[term] = 1
                 else:
-                    term_counts[term] += 1
+                    freq_by_term[term] += 1
 
-        num_of_documents = len(self.documents)
-        for k, v in term_counts.iteritems():
-            term_counts[k] = 1 + math.log10((num_of_documents / v))
+        # Calculate the Inverse Document Frequency of each term
+        for term, freq in freq_by_term.iteritems():
+            self.__idf_by_term[term] = 1 + math.log10(len(self.documents) / freq)
 
-        return term_counts
+        return self.__idf_by_term[term]
 
-    def __tf__(self, document):
-        terms = document.text.split()
-        term_counts = {}
-        for term  in terms:
-            if term not in term_counts:
-                term_counts[term] = 1
+    def __tf__(self, term, document):
+        """
+        Term Frequency
+
+        The term frequency is a count of how often a term occurs in a document
+        :param term: the term to calculate the frequency of
+        :param document: the document to calculate the term frequency from
+        :return: the frequency of therm within the given document
+        """
+
+        # First check to see if we have already calculated the term frequencies for this document
+        if document in self.__tf_by_term_by_document:
+            tf_by_term = self.__tf_by_term_by_document[document]
+            return tf_by_term[term]
+
+        # Count the frequency of each term
+        freq_by_term = {}
+        for term in document.text.split():
+            if term not in freq_by_term:
+                freq_by_term[term] = 1
             else:
-                term_counts[term] += 1
+                freq_by_term[term] += 1
 
-        return term_counts
+        self.__tf_by_term_by_document[document] = freq_by_term
+
+        return self.__tf_by_term_by_document[document][term]
 
     def __magnitude__(self, vector):
         """
@@ -155,35 +194,38 @@ class Document(object):
 
         return ' '.join(sb)
 
-# python = """
-# Python is a widely used general-purpose, high-level programming language.[19][20][21] Its design philosophy emphasizes code readability, and its syntax allows programmers to express concepts in fewer lines of code than would be possible in languages such as C++ or Java.[22][23] The language provides constructs intended to enable clear programs on both a small and large scale.[24]
-# Python supports multiple programming paradigms, including object-oriented, imperative and functional programming or procedural styles. It features a dynamic type system and automatic memory management and has a large and comprehensive standard library.[25]
-# Python interpreters are available for installation on many operating systems, allowing Python code execution on a wide variety of systems. Using third-party tools, such as Py2exe or Pyinstaller,[26] Python code can be packaged into stand-alone executable programs for some of the most popular operating systems, allowing for the distribution of Python-based software for use on those environments without requiring the installation of a Python interpreter.
-# CPython, the reference implementation of Python, is free and open-source software and has a community-based development model, as do nearly all of its alternative implementations. CPython is managed by the non-profit Python Software Foundation.
-# """
-#
-# ruby = """
-# Ruby is a dynamic, reflective, object-oriented, general-purpose programming language. It was designed and developed in the mid-1990s by Yukihiro "Matz" Matsumoto in Japan.
-# According to its authors, Ruby was influenced by Perl, Smalltalk, Eiffel, Ada, and Lisp.[13] It supports multiple programming paradigms, including functional, object-oriented, and imperative. It also has a dynamic type system and automatic memory management.
-# """
-#
-# scala = """
-# Scala is a programming language for general software applications. Scala has full support for functional programming and a very strong static type system. This allows programs written in Scala to be very concise and thus smaller in size than other general-purpose programming languages. Many of Scala's design decisions were inspired by criticism of the shortcomings of Java.[5]
-# Scala source code is intended to be compiled to Java bytecode, so that the resulting executable code runs on a Java virtual machine. Java libraries may be used directly in Scala code and vice versa (language interoperability).[7] Like Java, Scala is object-oriented, and uses a curly-brace syntax reminiscent of the C programming language. Unlike Java, Scala has many features of functional programming languages like Scheme, Standard ML and Haskell, including currying, type inference, immutability, lazy evaluation, and pattern matching. It also has an advanced type system supporting algebraic data types, covariance and contravariance, higher-order types (but not higher-rank types), and anonymous types. Other features of Scala not present in Java include operator overloading, optional parameters, named parameters, raw strings, and no checked exceptions.
-# The name Scala is a portmanteau of "scalable" and "language", signifying that it is designed to grow with the demands of its users.[8]
-# """
-#
-# java = """
-# Java is a general-purpose computer programming language that is concurrent, class-based, object-oriented,[12] and specifically designed to have as few implementation dependencies as possible. It is intended to let application developers "write once, run anywhere" (WORA),[13] meaning that compiled Java code can run on all platforms that support Java without the need for recompilation.[14] Java applications are typically compiled to bytecode that can run on any Java virtual machine (JVM) regardless of computer architecture. As of 2015, Java is one of the most popular programming languages in use,[15][16][17][18] particularly for client-server web applications, with a reported 9 million developers.[citation needed] Java was originally developed by James Gosling at Sun Microsystems (which has since been acquired by Oracle Corporation) and released in 1995 as a core component of Sun Microsystems' Java platform. The language derives much of its syntax from C and C++, but it has fewer low-level facilities than either of them.
-# The original and reference implementation Java compilers, virtual machines, and class libraries were originally released by Sun under proprietary licences. As of May 2007, in compliance with the specifications of the Java Community Process, Sun relicensed most of its Java technologies under the GNU General Public License. Others have also developed alternative implementations of these Sun technologies, such as the GNU Compiler for Java (bytecode compiler), GNU Classpath (standard libraries), and IcedTea-Web (browser plugin for applets).
-# """
-#
-# documents = []
-# documents.append(Document("python", python))
-# documents.append(Document("ruby", ruby))
-# documents.append(Document("scala", scala))
-# documents.append(Document("java", java))
-#
-# test = TFIDF(documents)
-#
-# print test.evaluate(len(documents))
+python = """
+Python is a widely used general-purpose, high-level programming language.[19][20][21] Its design philosophy emphasizes code readability, and its syntax allows programmers to express concepts in fewer lines of code than would be possible in languages such as C++ or Java.[22][23] The language provides constructs intended to enable clear programs on both a small and large scale.[24]
+Python supports multiple programming paradigms, including object-oriented, imperative and functional programming or procedural styles. It features a dynamic type system and automatic memory management and has a large and comprehensive standard library.[25]
+Python interpreters are available for installation on many operating systems, allowing Python code execution on a wide variety of systems. Using third-party tools, such as Py2exe or Pyinstaller,[26] Python code can be packaged into stand-alone executable programs for some of the most popular operating systems, allowing for the distribution of Python-based software for use on those environments without requiring the installation of a Python interpreter.
+CPython, the reference implementation of Python, is free and open-source software and has a community-based development model, as do nearly all of its alternative implementations. CPython is managed by the non-profit Python Software Foundation.
+"""
+
+ruby = """
+Ruby is a dynamic, reflective, object-oriented, general-purpose programming language. It was designed and developed in the mid-1990s by Yukihiro "Matz" Matsumoto in Japan.
+According to its authors, Ruby was influenced by Perl, Smalltalk, Eiffel, Ada, and Lisp.[13] It supports multiple programming paradigms, including functional, object-oriented, and imperative. It also has a dynamic type system and automatic memory management.
+"""
+
+scala = """
+Scala is a programming language for general software applications. Scala has full support for functional programming and a very strong static type system. This allows programs written in Scala to be very concise and thus smaller in size than other general-purpose programming languages. Many of Scala's design decisions were inspired by criticism of the shortcomings of Java.[5]
+Scala source code is intended to be compiled to Java bytecode, so that the resulting executable code runs on a Java virtual machine. Java libraries may be used directly in Scala code and vice versa (language interoperability).[7] Like Java, Scala is object-oriented, and uses a curly-brace syntax reminiscent of the C programming language. Unlike Java, Scala has many features of functional programming languages like Scheme, Standard ML and Haskell, including currying, type inference, immutability, lazy evaluation, and pattern matching. It also has an advanced type system supporting algebraic data types, covariance and contravariance, higher-order types (but not higher-rank types), and anonymous types. Other features of Scala not present in Java include operator overloading, optional parameters, named parameters, raw strings, and no checked exceptions.
+The name Scala is a portmanteau of "scalable" and "language", signifying that it is designed to grow with the demands of its users.[8]
+"""
+
+java = """
+Java is a general-purpose computer programming language that is concurrent, class-based, object-oriented,[12] and specifically designed to have as few implementation dependencies as possible. It is intended to let application developers "write once, run anywhere" (WORA),[13] meaning that compiled Java code can run on all platforms that support Java without the need for recompilation.[14] Java applications are typically compiled to bytecode that can run on any Java virtual machine (JVM) regardless of computer architecture. As of 2015, Java is one of the most popular programming languages in use,[15][16][17][18] particularly for client-server web applications, with a reported 9 million developers.[citation needed] Java was originally developed by James Gosling at Sun Microsystems (which has since been acquired by Oracle Corporation) and released in 1995 as a core component of Sun Microsystems' Java platform. The language derives much of its syntax from C and C++, but it has fewer low-level facilities than either of them.
+The original and reference implementation Java compilers, virtual machines, and class libraries were originally released by Sun under proprietary licences. As of May 2007, in compliance with the specifications of the Java Community Process, Sun relicensed most of its Java technologies under the GNU General Public License. Others have also developed alternative implementations of these Sun technologies, such as the GNU Compiler for Java (bytecode compiler), GNU Classpath (standard libraries), and IcedTea-Web (browser plugin for applets).
+"""
+
+documents = []
+documents.append(Document("python", python))
+documents.append(Document("ruby", ruby))
+documents.append(Document("scala", scala))
+documents.append(Document("java", java))
+
+test = TFIDF(documents)
+
+for document, neighbors in test.evaluate().iteritems():
+    print document.id
+    for neighbor in neighbors:
+        print "\t" + str(neighbor.id)
