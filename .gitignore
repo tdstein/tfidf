@@ -2,3 +2,4 @@ scraper
 .idea/
 *.iml
 .python-version
+.DS_Store
