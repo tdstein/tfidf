@@ -6,6 +6,11 @@ import operator
 from collections import OrderedDict
 from stemming.porter2 import stem
 
+"""
+Term Frequency - Inverse Document Frequency, or TFIDF, is a method of determining the likely impact a term has towards the
+distinction of a phrase in relationship to a other phrases in a corpus of documents. Once an estimated impact of each
+term in a corpus of documents has been found, cosine similarity can be used to find similar documents.
+"""
 
 class TFIDF(object):
 
@@ -37,6 +42,13 @@ class TFIDF(object):
             self.add_document(document)
 
     def evaluate(self):
+        """
+        Finds similar documents, sorted by likelihood of similarity, for every supplied document.
+
+        The similarity score is found the cosine similarity method.
+
+        :return: A dictionary of every document mapped to a list of similar documents ordered by most similar.
+        """
 
         # Calculate the Term Frequency - Inverse Document Frequency of each term in the corpus
         tfidf_by_term_by_document = {}
@@ -51,12 +63,9 @@ class TFIDF(object):
         # Find the nearest neighbors by document
         neighbors_by_document = {}
         for target in self.documents:
-            target_tfidf_by_term = tfidf_by_term_by_document[document]
             neighbors = {}
             for neighbor in self.documents:
                 if neighbor != target:
-                    neighbor_tfidf_by_term = tfidf_by_term_by_document[neighbor]
-
                     # Find the common terms in both the target and the neighbor
                     common_terms = set(target.text.split()).intersection(set(neighbor.text.split()))
 
