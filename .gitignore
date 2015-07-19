@@ -3,3 +3,4 @@ scraper
 *.iml
 .python-version
 .DS_Store
+*.pyc
